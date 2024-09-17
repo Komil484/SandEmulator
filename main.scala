@@ -1,13 +1,17 @@
 // ' ▄▀█'
-object Main {
+object SandEmulator {
   def main(args: Array[String]): Unit = {
-    val chars = " ▄▀█"
     val grid = List(
       List(true, true, false),
       List(true, false, true),
       List(false, false, true)
     )
+    args.foreach(println)
     print_grid(grid)
+  }
+
+  def get_grid_from_image(): List[List[Boolean]] = {
+    Nil
   }
 
   def print_grid(grid: List[List[Boolean]]): Unit = {
