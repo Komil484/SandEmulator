@@ -3,6 +3,7 @@ import java.awt.image.BufferedImage
 import java.awt.{Dimension, Graphics}
 import java.awt.event.ActionEvent
 import java.awt.event.ActionListener
+import java.util.concurrent.CountDownLatch
 import javax.imageio.ImageIO
 import javax.swing.{JFrame, JPanel, Timer}
 import javax.swing.WindowConstants
@@ -10,6 +11,7 @@ import scala.util.{Try, Success, Failure}
 
 // ' ▄▀█'
 object SandEmulator {
+  val escape_char = '\u001b'
   val A = true
   val B = false
   val default_interval = 50
@@ -29,59 +31,51 @@ object SandEmulator {
   def main(args: Array[String]): Unit = {
     val parsed_args = parse_args(args)
 
-    val image = parsed_args("input") match {
-      case Some(file_path) => {
-        val file = new File(file_path)
-        Try(ImageIO.read(file)) match {
-          case Success(file) => file
-          case Failure(ex) => {
-            Console.err.println(s"Unable to read file (${file_path})")
-            sys.exit(1)
-          }
-        }
-      }
-      case None => get_image_from_grid(default_grid)
-    }
-
-    val interval = parsed_args("interval") match {
-      case Some(strNum) =>
-        Try(strNum.toInt) match {
-          case Success(num) => num
-          case Failure(ex) => {
-            Console.err.println(
-              s"Time interval (${strNum}) must be a valid integer"
-            )
-            sys.exit(1)
-          }
-        }
-      case None => default_interval
-    }
-
-    // disable transparency
-    val bg_color = 0xff_00_00_00 | (parsed_args("bg-color") match {
-      case Some(hex) =>
-        Try(Integer.parseInt(hex, 16)) match {
-          case Success(num) => num
-          case Failure(ex) => {
-            Console.err.println(
-              s"Background color (${hex}) must be a valid hexadecimal"
-            )
-            sys.exit(1)
-          }
-        }
-      case None => default_bg_color
-    })
-
-    val action = parsed_args("console") match {
+    parsed_args("help") match {
       case Some(_) => {
-        get_grid_from_image(image, bg_color)
-        new ActionListener {
+        print_help()
+        sys.exit(0)
+      }
+      case None => {}
+    }
+
+    val image = get_image_from_args(parsed_args)
+    val interval = get_interval_from_args(parsed_args)
+    val bg_color = get_bg_color_from_args(parsed_args)
+    val scale = get_scale_from_args(parsed_args)
+
+    parsed_args("console") match {
+      case Some(_) => {
+        val action = new ActionListener {
           override def actionPerformed(e: ActionEvent): Unit = {
             emulate_image(image, bg_color)
 
+            clear_screen()
             print_grid(get_grid_from_image(image, bg_color))
           }
         }
+
+        val timer = new Timer(
+          interval,
+          action
+        )
+
+        save_screen()
+
+        timer.start()
+
+        val latch = new CountDownLatch(1)
+
+        Runtime.getRuntime.addShutdownHook(new Thread() {
+          override def run(): Unit = {
+            timer.stop()
+            latch.countDown()
+            restore_screen()
+            Runtime.getRuntime.halt(0)
+          }
+        })
+
+        latch.await()
       }
       case None => {
         val frame = new JFrame("Sane Emulator")
@@ -101,22 +95,23 @@ object SandEmulator {
         frame.pack()
         frame.setVisible(true)
 
-        new ActionListener {
+        val action = new ActionListener {
           override def actionPerformed(e: ActionEvent): Unit = {
             emulate_image(image, bg_color)
 
             panel.repaint()
           }
         }
+
+        val timer = new Timer(
+          interval,
+          action
+        )
+
+        timer.start()
       }
     }
 
-    val timer = new Timer(
-      interval,
-      action
-    )
-
-    timer.start()
   }
 
   def parse_args(args: Array[String]): Map[String, Option[String]] = {
@@ -128,6 +123,8 @@ object SandEmulator {
       .toMap
 
     Map[String, Option[String]](
+      "help" -> (if (args.contains("--help") || args.contains("-h")) Some("")
+                 else None),
       "input" -> argsMap.getOrElse("--input", argsMap.getOrElse("-i", None)),
       "interval" -> argsMap
         .getOrElse("--interval", argsMap.getOrElse("-t", None)),
@@ -137,7 +134,8 @@ object SandEmulator {
       "bg-color" -> argsMap.getOrElse(
         "--bg-color",
         argsMap.getOrElse("-b", None)
-      )
+      ),
+      "scale" -> argsMap.getOrElse("--scale", argsMap.getOrElse("-s", None))
     )
   }
 
@@ -148,7 +146,7 @@ object SandEmulator {
     val width = image.getWidth
     val height = image.getHeight
 
-    var grid = Array.ofDim[Boolean](height, width)
+    val grid = Array.ofDim[Boolean](height, width)
 
     for (y <- 0 until height; x <- 0 until width) {
       grid(y)(x) = image.getRGB(x, y) != bg_color
@@ -277,5 +275,117 @@ object SandEmulator {
     })
 
     print(stringGrid.toString())
+  }
+
+  def get_image_from_args(args: Map[String, Option[String]]): BufferedImage = {
+    args("input") match {
+      case Some(file_path) => {
+        val file = new File(file_path)
+        Try(ImageIO.read(file)) match {
+          case Success(file) => file
+          case Failure(ex) => {
+            Console.err.println(s"Unable to read file (${file_path})")
+            sys.exit(1)
+          }
+        }
+      }
+      case None => get_image_from_grid(default_grid)
+    }
+  }
+
+  def get_interval_from_args(args: Map[String, Option[String]]): Int = {
+    args("interval") match {
+      case Some(strNum) =>
+        Try(strNum.toInt) match {
+          case Success(num) => num
+          case Failure(ex) => {
+            Console.err.println(
+              s"Time interval (${strNum}) must be a valid integer"
+            )
+            sys.exit(1)
+          }
+        }
+      case None => default_interval
+    }
+  }
+
+  def get_bg_color_from_args(args: Map[String, Option[String]]): Int = {
+    // disable transparency
+    0xff_00_00_00 | (args("bg-color") match {
+      case Some(hex) =>
+        Try(Integer.parseInt(hex, 16)) match {
+          case Success(num) => num
+          case Failure(ex) => {
+            Console.err.println(
+              s"Background color (${hex}) must be a valid hexadecimal"
+            )
+            sys.exit(1)
+          }
+        }
+      case None => default_bg_color
+    })
+  }
+
+  def get_scale_from_args(args: Map[String, Option[String]]): Int = {
+    args("scale") match {
+      case Some(strNum) =>
+        Try(strNum.toInt) match {
+          case Success(num) =>
+            if (num < 1) {
+              Console.err.println(
+                s"Scale (${strNum}) must be a positive integer"
+              )
+              sys.exit(1)
+            } else num
+          case Failure(ex) => {
+            Console.err.println(
+              s"Scale (${strNum}) must be a valid positive integer"
+            )
+            sys.exit(1)
+          }
+        }
+      case None => 1
+    }
+  }
+
+  def print_help(): Unit = {
+    val program_name = System.getProperty("sun.java.command")
+
+    val helpString = s"""
+    |Usage: ${program_name} [options]
+
+    |Options:
+    |  --help, -h                 Show this help message and exit.
+    |  --input, -i <filename>     Specify the input file to be processed.
+    |  --interval, -t <interval>  Set the interval (in milliseconds) between operations.
+    |  --bg-color, -b <hex color> Specify the background color in hexadecimal format (e.g., #FFFFFF).
+    |  --scale, -s <scale>        Set the scale factor (e.g., 1 for no scaling).
+    |  --console, -c              Run the program in console mode (no graphical interface).
+    """.stripMargin
+
+    println(helpString)
+  }
+
+  def save_screen(): Unit = {
+    val cursor_invisible = s"${escape_char}[?25l";
+    val cursor_save = s"${escape_char} 7"
+    val save_screen = s"${escape_char}[?1049h";
+    print(cursor_invisible)
+    print(save_screen)
+  }
+
+  def clear_screen(): Unit = {
+    val clear_screen = s"${escape_char}[2J"
+    val cursor_home = s"${escape_char}[H"
+    print(clear_screen)
+    print(cursor_home)
+  }
+
+  def restore_screen(): Unit = {
+    val cursor_visible = s"${escape_char}[?25h"
+    val cursor_restore = s"${escape_char} 8"
+    val restore_screen = s"${escape_char}[?1049l"
+    print(cursor_visible)
+    print(restore_screen)
   }
 }
