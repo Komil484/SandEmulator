@@ -6,12 +6,14 @@ import java.awt.event.ActionListener
 import javax.imageio.ImageIO
 import javax.swing.{JFrame, JPanel, Timer}
 import javax.swing.WindowConstants
+import scala.util.{Try, Success, Failure}
 
 // ' ▄▀█'
 object SandEmulator {
   val A = true
   val B = false
   val default_interval = 50
+  val default_bg_color = 0xff_ff_ff_ff // white
   var default_grid = Array(
     Array(B, B, B, B, B, B, B, B, B),
     Array(B, B, B, B, B, B, B, B, B),
@@ -25,58 +27,86 @@ object SandEmulator {
   )
 
   def main(args: Array[String]): Unit = {
-    val image = if (args.length >= 1) {
-      val file_path = args(0)
-      val file = new File(file_path)
-      ImageIO.read(file)
-    } else {
-      get_image_from_grid(default_grid)
+    val parsed_args = parse_args(args)
+
+    val image = parsed_args("input") match {
+      case Some(file_path) => {
+        val file = new File(file_path)
+        Try(ImageIO.read(file)) match {
+          case Success(file) => file
+          case Failure(ex) => {
+            Console.err.println(s"Unable to read file (${file_path})")
+            sys.exit(1)
+          }
+        }
+      }
+      case None => get_image_from_grid(default_grid)
     }
 
-    val interval = if (args.length >= 2) {
-      args(1).toIntOption match {
-        case Some(num) => num
-        case _ => {
-          Console.err.println("Time interval must be a valid integer")
-          sys.exit(1)
+    val interval = parsed_args("interval") match {
+      case Some(strNum) =>
+        Try(strNum.toInt) match {
+          case Success(num) => num
+          case Failure(ex) => {
+            Console.err.println(
+              s"Time interval (${strNum}) must be a valid integer"
+            )
+            sys.exit(1)
+          }
+        }
+      case None => default_interval
+    }
+
+    // disable transparency
+    val bg_color = 0xff_00_00_00 | (parsed_args("bg-color") match {
+      case Some(hex) =>
+        Try(Integer.parseInt(hex, 16)) match {
+          case Success(num) => num
+          case Failure(ex) => {
+            Console.err.println(
+              s"Background color (${hex}) must be a valid hexadecimal"
+            )
+            sys.exit(1)
+          }
+        }
+      case None => default_bg_color
+    })
+
+    val action = parsed_args("console") match {
+      case Some(_) => {
+        get_grid_from_image(image, bg_color)
+        new ActionListener {
+          override def actionPerformed(e: ActionEvent): Unit = {
+            emulate_image(image, bg_color)
+
+            print_grid(get_grid_from_image(image, bg_color))
+          }
         }
       }
-    } else default_interval
+      case None => {
+        val frame = new JFrame("Sane Emulator")
+        frame.setDefaultCloseOperation(WindowConstants.EXIT_ON_CLOSE)
 
-    val width = image.getWidth
-    val height = image.getHeight
+        val panel = new JPanel() {
+          override def paintComponent(g: Graphics): Unit = {
+            super.paintComponent(g)
+            g.drawImage(image, 0, 0, null)
+          }
 
-    val action = if (args.length >= 1) {
-      val frame = new JFrame("Sane Emulator")
-      frame.setDefaultCloseOperation(WindowConstants.EXIT_ON_CLOSE)
-
-      val panel = new JPanel() {
-        override def paintComponent(g: Graphics): Unit = {
-          super.paintComponent(g)
-          g.drawImage(image, 0, 0, null)
+          override def getPreferredSize: Dimension =
+            new Dimension(image.getWidth, image.getHeight)
         }
 
-        override def getPreferredSize: Dimension = new Dimension(width, height)
-      }
+        frame.getContentPane.add(panel)
+        frame.pack()
+        frame.setVisible(true)
 
-      frame.getContentPane.add(panel)
-      frame.pack()
-      frame.setVisible(true)
+        new ActionListener {
+          override def actionPerformed(e: ActionEvent): Unit = {
+            emulate_image(image, bg_color)
 
-      new ActionListener {
-        override def actionPerformed(e: ActionEvent): Unit = {
-          emulate_image(image)
-
-          panel.repaint()
-        }
-      }
-    } else {
-      get_grid_from_image(image)
-      new ActionListener {
-        override def actionPerformed(e: ActionEvent): Unit = {
-          emulate_image(image)
-
-          print_grid(get_grid_from_image(image))
+            panel.repaint()
+          }
         }
       }
     }
@@ -89,16 +119,39 @@ object SandEmulator {
     timer.start()
   }
 
-  def get_grid_from_image(image: BufferedImage): Array[Array[Boolean]] = {
-    val white = 0xff_ff_ff_ff
+  def parse_args(args: Array[String]): Map[String, Option[String]] = {
+    val argsMap: Map[String, Option[String]] = args
+      .sliding(2)
+      .collect {
+        case Array(key, value) if key.startsWith("-") => key -> Some(value)
+      }
+      .toMap
 
+    Map[String, Option[String]](
+      "input" -> argsMap.getOrElse("--input", argsMap.getOrElse("-i", None)),
+      "interval" -> argsMap
+        .getOrElse("--interval", argsMap.getOrElse("-t", None)),
+      "console" -> (if (args.contains("--console") || args.contains("-c"))
+                      Some("")
+                    else None),
+      "bg-color" -> argsMap.getOrElse(
+        "--bg-color",
+        argsMap.getOrElse("-b", None)
+      )
+    )
+  }
+
+  def get_grid_from_image(
+      image: BufferedImage,
+      bg_color: Int
+  ): Array[Array[Boolean]] = {
     val width = image.getWidth
     val height = image.getHeight
 
     var grid = Array.ofDim[Boolean](height, width)
 
     for (y <- 0 until height; x <- 0 until width) {
-      grid(y)(x) = image.getRGB(x, y) != white
+      grid(y)(x) = image.getRGB(x, y) != bg_color
     }
 
     grid
@@ -120,14 +173,13 @@ object SandEmulator {
     image
   }
 
-  def emulate_image(image: BufferedImage): Unit = {
+  def emulate_image(image: BufferedImage, bg_color: Int): Unit = {
     def get_emulated_cells(
         topLeft: Int,
         topRight: Int,
         bottomLeft: Int,
         bottomRight: Int
     ): (Int, Int, Int, Int) = {
-      val bg_color = 0xff_ff_ff_ff
       var newTL = topLeft
       var newTR = topRight
       var newBL = bottomLeft
