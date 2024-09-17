@@ -39,10 +39,12 @@ object SandEmulator {
       case None => {}
     }
 
-    val image = get_image_from_args(parsed_args)
-    val interval = get_interval_from_args(parsed_args)
     val bg_color = get_bg_color_from_args(parsed_args)
+    val interval = get_interval_from_args(parsed_args)
+    val multiply = get_multiply_from_args(parsed_args)
     val scale = get_scale_from_args(parsed_args)
+    val unscaled_image = get_image_from_args(parsed_args, bg_color)
+    val image = get_scaled_image(unscaled_image, multiply)
 
     parsed_args("console") match {
       case Some(_) => {
@@ -51,7 +53,9 @@ object SandEmulator {
             emulate_image(image, bg_color)
 
             clear_screen()
-            print_grid(get_grid_from_image(image, bg_color))
+            print_grid(
+              get_grid_from_image(get_scaled_image(image, scale), bg_color)
+            )
           }
         }
 
@@ -78,17 +82,17 @@ object SandEmulator {
         latch.await()
       }
       case None => {
-        val frame = new JFrame("Sane Emulator")
+        val frame = new JFrame("Sand Emulator")
         frame.setDefaultCloseOperation(WindowConstants.EXIT_ON_CLOSE)
 
         val panel = new JPanel() {
           override def paintComponent(g: Graphics): Unit = {
             super.paintComponent(g)
-            g.drawImage(image, 0, 0, null)
+            g.drawImage(get_scaled_image(image, scale), 0, 0, null)
           }
 
           override def getPreferredSize: Dimension =
-            new Dimension(image.getWidth, image.getHeight)
+            new Dimension(image.getWidth * scale, image.getHeight * scale)
         }
 
         frame.getContentPane.add(panel)
@@ -135,7 +139,11 @@ object SandEmulator {
         "--bg-color",
         argsMap.getOrElse("-b", None)
       ),
-      "scale" -> argsMap.getOrElse("--scale", argsMap.getOrElse("-s", None))
+      "scale" -> argsMap.getOrElse("--scale", argsMap.getOrElse("-s", None)),
+      "multiply" -> argsMap.getOrElse(
+        "--multiply",
+        argsMap.getOrElse("-m", None)
+      )
     )
   }
 
@@ -155,9 +163,21 @@ object SandEmulator {
     grid
   }
 
-  def get_image_from_grid(grid: Array[Array[Boolean]]): BufferedImage = {
+  def get_image_from_grid(
+      grid: Array[Array[Boolean]],
+      bg_color: Int
+  ): BufferedImage = {
+    def approximate_luminance(rgb: Int): Int = {
+      val r = (rgb >> 16) | 0xff
+      val g = (rgb >> 8) | 0xff
+      val b = rgb | 0xff
+      (r + r + b + g + g + g) / 6
+    }
+
     val white = 0xff_ff_ff_ff
     val black = 0xff_00_00_00
+
+    val fg_color = if (approximate_luminance(bg_color) > 128) black else white
 
     val width = grid.length
     val height = grid(0).length
@@ -165,7 +185,7 @@ object SandEmulator {
     val image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB)
 
     for (y <- 0 until height; x <- 0 until width) {
-      image.setRGB(x, y, if (grid(y)(x)) black else white)
+      image.setRGB(x, y, if (grid(y)(x)) fg_color else bg_color)
     }
 
     image
@@ -277,7 +297,30 @@ object SandEmulator {
     print(stringGrid.toString())
   }
 
-  def get_image_from_args(args: Map[String, Option[String]]): BufferedImage = {
+  def get_scaled_image(image: BufferedImage, scale: Int): BufferedImage = {
+    val width = image.getWidth
+    val height = image.getHeight
+
+    val new_width = width * scale
+    val new_height = height * scale
+
+    val new_image =
+      new BufferedImage(new_width, new_height, BufferedImage.TYPE_INT_RGB)
+
+    for (y <- 0 until height; x <- 0 until width) {
+      val rgb = image.getRGB(x, y)
+      for (j <- 0 until scale; i <- 0 until scale) {
+        new_image.setRGB(x * scale + i, y * scale + j, rgb)
+      }
+    }
+
+    new_image
+  }
+
+  def get_image_from_args(
+      args: Map[String, Option[String]],
+      bg_color: Int
+  ): BufferedImage = {
     args("input") match {
       case Some(file_path) => {
         val file = new File(file_path)
@@ -289,7 +332,7 @@ object SandEmulator {
           }
         }
       }
-      case None => get_image_from_grid(default_grid)
+      case None => get_image_from_grid(default_grid, bg_color)
     }
   }
 
@@ -348,6 +391,28 @@ object SandEmulator {
     }
   }
 
+  def get_multiply_from_args(args: Map[String, Option[String]]): Int = {
+    args("multiply") match {
+      case Some(strNum) =>
+        Try(strNum.toInt) match {
+          case Success(num) =>
+            if (num < 1) {
+              Console.err.println(
+                s"Multiply (${strNum}) must be a positive integer"
+              )
+              sys.exit(1)
+            } else num
+          case Failure(ex) => {
+            Console.err.println(
+              s"Multiply (${strNum}) must be a valid positive integer"
+            )
+            sys.exit(1)
+          }
+        }
+      case None => 1
+    }
+  }
+
   def print_help(): Unit = {
     val program_name = System.getProperty("sun.java.command")
 
@@ -359,7 +424,8 @@ object SandEmulator {
     |  --input, -i <filename>     Specify the input file to be processed.
     |  --interval, -t <interval>  Set the interval (in milliseconds) between operations.
     |  --bg-color, -b <hex color> Specify the background color in hexadecimal format (e.g., #FFFFFF).
-    |  --scale, -s <scale>        Set the scale factor (e.g., 1 for no scaling).
+    |  --scale, -s <scale>        Set visual scale (e.g., 1 for no scaling).
+    |  --multiply, -m <multiply>  Set multiply factor (e.g., 1 for no multiplying).
     |  --console, -c              Run the program in console mode (no graphical interface).
     """.stripMargin
 
