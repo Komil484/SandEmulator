@@ -1,11 +1,17 @@
-import java.awt.image.BufferedImage
 import java.io.File
+import java.awt.image.BufferedImage
+import java.awt.{Dimension, Graphics}
+import java.awt.event.ActionEvent
+import java.awt.event.ActionListener
 import javax.imageio.ImageIO
+import javax.swing.{JFrame, JPanel, Timer}
+import javax.swing.WindowConstants
 
 // ' ▄▀█'
 object SandEmulator {
   val A = true
   val B = false
+  val default_interval = 50
   var default_grid = Array(
     Array(B, B, B, B, B, B, B, B, B),
     Array(B, B, B, B, B, B, B, B, B),
@@ -19,19 +25,68 @@ object SandEmulator {
   )
 
   def main(args: Array[String]): Unit = {
-    val image = if (args.length < 1) {
-      get_image_from_grid(default_grid)
-    } else {
+    val image = if (args.length >= 1) {
       val file_path = args(0)
       val file = new File(file_path)
       ImageIO.read(file)
+    } else {
+      get_image_from_grid(default_grid)
     }
 
-    for (i <- 1 to 100) {
-      print_grid(get_grid_from_image(image))
-      emulate_image(image)
-      Thread.sleep(500)
+    val interval = if (args.length >= 2) {
+      args(1).toIntOption match {
+        case Some(num) => num
+        case _ => {
+          Console.err.println("Time interval must be a valid integer")
+          sys.exit(1)
+        }
+      }
+    } else default_interval
+
+    val width = image.getWidth
+    val height = image.getHeight
+
+    val action = if (args.length >= 1) {
+      val frame = new JFrame("Sane Emulator")
+      frame.setDefaultCloseOperation(WindowConstants.EXIT_ON_CLOSE)
+
+      val panel = new JPanel() {
+        override def paintComponent(g: Graphics): Unit = {
+          super.paintComponent(g)
+          g.drawImage(image, 0, 0, null)
+        }
+
+        override def getPreferredSize: Dimension = new Dimension(width, height)
+      }
+
+      frame.getContentPane.add(panel)
+      frame.pack()
+      frame.setVisible(true)
+
+      new ActionListener {
+        override def actionPerformed(e: ActionEvent): Unit = {
+          emulate_image(image)
+
+          panel.repaint()
+        }
+      }
+    } else {
+      get_grid_from_image(image)
+      new ActionListener {
+        override def actionPerformed(e: ActionEvent): Unit = {
+          emulate_image(image)
+
+          print_grid(get_grid_from_image(image))
+        }
+      }
     }
+
+    val timer = new Timer(
+      interval,
+      action
+    )
+
+    timer.start()
   }
 
   def get_grid_from_image(image: BufferedImage): Array[Array[Boolean]] = {
@@ -162,8 +217,13 @@ object SandEmulator {
         .toList
     }
 
+    val stringGrid = new StringBuilder()
+
     printable_from_grid(grid).foreach(row => {
-      println(row)
+      stringGrid.append(row)
+      stringGrid.append("\n")
     })
+
+    print(stringGrid.toString())
   }
 }
